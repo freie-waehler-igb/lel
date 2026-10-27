@@ -122,7 +122,7 @@ Ton, und zwar nur passend zur letzten Nachricht. Übernimm einen Beispielsatz ni
 - Anderes Thema, etwa ein Rezept, Smalltalk oder Philosophie: kurz und charmant darauf eingehen, dann in ein bis zwei Sätzen zurück zur Jobsuche. Ein Rezept bleibt ungeschrieben. readyToSearch false.
 - Echte Suche: ein kurzer menschlicher Satz, der Beruf und Ort oder Remote beim Namen nennt. Bei "remote deutschland oder hybrid im Umkreis" nenne beide Seiten, die Stadt und die Kilometer, nicht nur das Land. Nicht "Hier sind" und nicht "nimm dir Zeit".
 - Sag nie "Ich bin eine Job-KI und kann dir nur bei der Stellensuche helfen." Sag nie, etwas sei verboten. Keine Moral und kein Vortrag.
-- Krise: ein kurzer ruhiger Satz, ohne Belehrung. readyToSearch false.
+- Krise, wenn jemand nicht mehr leben will: ein kurzer mitfühlender Satz, dann die Telefonseelsorge 0800 111 0 111 oder 116 123 und im Notfall 112. Kein Vortrag. readyToSearch false.
 
 readyToSearch ist true nur, wenn klar gesucht werden soll und genug da ist: ein Beruf, oder ein klarer Ort, oder ein klares Remote- oder Hybrid-Vorhaben. Nachdenken, Geplauder und halbe Andeutungen bleiben false.
 
@@ -202,7 +202,7 @@ function replyMisses(messages, assistant) {
   const namesIt = /\b(?:remote|hybrid|designer|engineer|entwickler|ingbert|stelle|job)\b/i.test(spoken)
   const stall = /nimm dir zeit/i.test(spoken)
   if (searching && stall && !namesIt) return "Das war die Antwort auf ein Zögern, aber ich will jetzt suchen. Sag in ein bis zwei Sätzen konkret, welchen Beruf und welchen Ort oder welches Remote du suchst. Danach ###DATA### und das JSON, readyToSearch true."
-  const compound = /\bremote\b/i.test(text) && /\bhybrid\b/i.test(text) && /\bdeutschland\b/i.test(text)
+  const compound = /\bremote\b/i.test(text) && /\bhybrid\b/i.test(text) && (/\bdeutschland\b|\bin\s+de\b/i.test(text))
   if (compound) {
     const namesRemote = /\b(?:remote|deutschland)\b/i.test(spoken)
     const namesLocal = /\b(?:hybrid|ingbert|umkreis|km)\b/i.test(spoken)
@@ -359,14 +359,12 @@ async function askJson(messages, schema, name, maxTokens = 200, temperature = 0)
 }
 
 const AD_READ = `Du liest den Titel und den Text einer einzelnen Stellenanzeige.
-Die Person sucht das, was in der Nutzerzeile hinter "Gesucht:" steht.
-fit ist true, wenn die Anzeige in der Sache dasselbe meint. Der Titel darf anders heißen.
-Ein Software Engineer, in dessen Text UX/UI Design und Arbeiten mit einem Coding-Agenten steht, passt auf eine Suche nach Design Engineer mit agentic coding.
-Ein Titel, der nur ähnlich klingt, passt nicht, wenn der Text eine andere Arbeit beschreibt.
-Lies den Zusammenhang. Entscheide nicht, weil ein einzelnes Wort vorkommt oder fehlt. Keine feste Wortliste.
-Im Zweifel ist fit false.
-remote ist true nur, wenn die Arbeit selbst von zu Hause oder ortsunabhängig stattfindet. Eine bloße Möglichkeit, einzelne Tage oder ein Teil der Woche sind nicht remote. Im Zweifel ist remote false.
-why ist ein kurzer Satz. Wenn die Anzeige nicht passt oder nicht remote ist, steht darin der Grund.
+Die Person sucht Product Design, UX Design, UI Design oder Design Engineering. Andere Bezeichnungen derselben Arbeit zählen: UX Designer, UI Designer, Product Designer, Produktdesigner, Experience Designer.
+fit ist true, wenn der Titel oder der Text diese Arbeit meint.
+fit ist false bei Backend, Lager, Pflege, Elektrotechnik, Maschinenbau, Konstruktion ohne UX/UI, Verification, Security oder anderer fachfremder Technik.
+Agentic Coding, Design und andere Skills sind ein Plus, kein Ausschluss. Fehlt "agentic coding" im Text, bleibt fit true, solange die Rolle Product, UX, UI oder Design Engineering ist.
+remote ist true, wenn die Stelle vollständig von zu Hause oder ortsunabhängig ist, auch bei "100 % Homeoffice" oder "fully remote". Eine bloße Option, einzelne Tage oder ein Teil der Woche sind nicht remote.
+why ist ein kurzer Satz.
 Antworte nur als JSON mit fit, remote und why.`
 
 const AD_SCHEMA = {
@@ -395,9 +393,16 @@ function shortenAd(text) {
   const raw = String(text || "")
   const marker = "\n\nText:"
   const at = raw.indexOf(marker)
-  const body = (at === -1 ? raw : raw.slice(at + marker.length)).replace(/\s+/g, " ").trim().slice(0, TEASER)
-  if (at === -1) return body
-  return raw.slice(0, at + marker.length) + " " + body
+  const whole = (at === -1 ? raw : raw.slice(at + marker.length)).replace(/\s+/g, " ").trim()
+  const body = whole.slice(0, TEASER)
+  const remoteLines = []
+  for (const match of whole.matchAll(/.{0,70}(?:100\s*%|home-?office|homeoffice|remote|ortsunabhängig).{0,70}/gi)) {
+    remoteLines.push(match[0].trim())
+    if (remoteLines.length >= 2) break
+  }
+  const extra = remoteLines.filter((line) => !body.includes(line)).join(" ")
+  const head = at === -1 ? "" : raw.slice(0, at + marker.length) + " "
+  return (head + body + (extra ? " " + extra : "")).trim()
 }
 
 async function readAd(text) {

@@ -1,7 +1,8 @@
 const { log, active } = require("./log")
 const { listings, load } = require("./sources")
 const { readAd, scanTitles } = require("./llm")
-const { locate, towns, inside } = require("./geo")
+const { locate, towns, inside, closestKm } = require("./geo")
+const { clearDesignTitle, designSearch, unrelatedTitle, fullyRemoteText } = require("./titles")
 const { semanticCache, hashEmbed } = require("./semantic-cache")
 const { HnswIndex } = require("./hnsw")
 
@@ -207,7 +208,11 @@ function narrowJobs(jobs, filters, verdictById) {
       rejected.push(rejectedJob(job, hard))
       continue
     }
-    const verdict = verdictById?.get(job.id)
+    let verdict = verdictById?.get(job.id) || { fit: false, remote: false, why: "" }
+    if (clearDesignTitle(job.title)) {
+      verdict = { ...verdict, fit: true }
+    }
+    if (fullyRemoteText(jobText(job))) verdict = { ...verdict, remote: true }
     if (!verdict?.fit) {
       rejected.push(rejectedJob(job, verdict?.why || "Die Anzeige passt nicht zur Suche."))
       continue
@@ -240,9 +245,15 @@ async function keepNearby(jobs, filters) {
   const nearby = []
   const outside = []
   for (const job of jobs) {
-    if (inside(job, centers, filters.radiusKm)) nearby.push(job)
-    else outside.push(rejectedJob(job, "Die Stelle liegt außerhalb des Umkreises."))
+    const km = closestKm(job.coordinates, centers[0])
+    const kept = inside(job, centers, filters.radiusKm)
+    if (kept) nearby.push(job)
+    else {
+      const away = km == null ? "ohne Koordinate" : Math.round(km) + " km"
+      outside.push(rejectedJob(job, "Die Stelle liegt außerhalb des Umkreises (" + away + ")."))
+    }
   }
+  log("Umkreis " + filters.radiusKm + " km " + places.join(", ") + ": " + nearby.length + " behalten, " + outside.length + " außerhalb")
   return { nearby, outside }
 }
 
@@ -261,7 +272,9 @@ async function eachAd(jobs, filters) {
       const job = jobs[index]
       cursor += 1
       // KOMPRESSION: das Modell sieht Titel und Teaser, nicht die ganze Anzeige
-      const verdict = await readAd("Gesucht: " + readIntent(filters) + "\n\nTitel: " + job.title + "\n\nText: " + job.description)
+      let verdict = await readAd("Gesucht: " + readIntent(filters) + "\n\nTitel: " + job.title + "\n\nText: " + job.description)
+      if (clearDesignTitle(job.title)) verdict = { ...verdict, fit: true }
+      if (fullyRemoteText(job.title + "\n" + job.description)) verdict = { ...verdict, remote: true }
       if (!active()) return
       verdictById.set(job.id, verdict)
       const kept = keptVerdict(verdict, filters)
@@ -270,6 +283,7 @@ async function eachAd(jobs, filters) {
       let line = "Anzeige " + (index + 1) + " von " + jobs.length + ": " + job.title + (shown ? " passt" : " fällt weg")
       if (!shown) {
         if (blocked) line += "\n" + blocked
+        else if (filters.remote === "required" && verdict.fit && verdict.remote !== true) line += "\nNicht vollständig remote."
         else line += verdict.why ? "\nModell: " + verdict.why : "\nDie Anzeige passt nicht zur Suche."
       }
       log(line)
@@ -292,11 +306,17 @@ async function runSearch(filters) {
   const titles = listed.items.map((item) => String(item.stellenangebotsTitel || "Stelle").trim())
   const intent = filters.intent || filters.query || filters.roles.join(" oder ")
   const openRole = !String(intent).trim()
-  const drop = titles.length && !openRole ? await scanTitles(readIntent(filters), titles) : []
+  const shaped = designSearch(filters)
+  const drop = titles.length && !openRole && !shaped ? await scanTitles(readIntent(filters), titles) : []
   if (!active()) return none()
   const kept = []
   const rejected = []
   titles.forEach((title, index) => {
+    if (shaped && (unrelatedTitle(title) || !clearDesignTitle(title))) {
+      log("Titel weg: " + title)
+      rejected.push(rejectedListing(listed.items[index], "Der Titel gehört nicht zu Product, UX oder UI Design."))
+      return
+    }
     if (drop[index] && !stemInTitle(title, filters)) {
       log("Titel weg: " + title)
       rejected.push(rejectedListing(listed.items[index], "Der Titel passt nicht zur Suche."))
@@ -316,12 +336,18 @@ async function runSearch(filters) {
   }
   rejected.push(...split.outside)
   let verdictById
-  if (openRole && filters.remote !== "required") {
-    verdictById = new Map(candidates.map((job) => [job.id, { fit: true, remote: job.remote === true, why: "" }]))
+  const designLocal = shaped && filters.remote !== "required"
+  if (designLocal || (openRole && filters.remote !== "required")) {
+    verdictById = new Map(candidates.map((job) => [job.id, {
+      fit: designLocal ? clearDesignTitle(job.title) : true,
+      remote: fullyRemoteText(jobText(job)) || job.remote === true,
+      why: ""
+    }]))
   } else {
     verdictById = candidates.length ? await eachAd(candidates, filters) : new Map()
   }
   const narrowed = narrowJobs(hybridRank(candidates, filters), filters, verdictById)
+  log("Treffer: " + (narrowed.matches.length ? narrowed.matches.map((job) => job.title).join(" | ") : "keine"))
   return {
     ...narrowed,
     rejected: [...rejected, ...narrowed.rejected],

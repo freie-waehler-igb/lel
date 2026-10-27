@@ -59,11 +59,13 @@ function towns(locations) {
 }
 
 function isNationwide(name) {
-  return /^(?:deutschland|germany|bundesweit|bundesgebiet|bundesrepublik(?:\s+deutschland)?)$/i.test(String(name || "").trim())
+  return /^(?:deutschland|germany|bundesweit|bundesgebiet|bundesrepublik(?:\s+deutschland)?|de)$/i.test(String(name || "").trim())
 }
 
 function mentionsNationwide(text) {
-  return /\b(?:deutschland|germany|bundesweit|bundesgebiet)\b/i.test(String(text || ""))
+  const source = String(text || "")
+  if (/\b(?:deutschland|germany|bundesweit|bundesgebiet)\b/i.test(source)) return true
+  return /\b(?:in|nach)\s+de\b/i.test(source)
 }
 
 function radiusMention(text) {
@@ -102,11 +104,19 @@ function placeAround(text) {
       if (words.length >= 4) break
     }
     const place = tidyPlace(words.join(" "))
-    if (!place || isNationwide(place) || isState(place)) continue
-    if (/^(der|die|das|dem|den|wenn|falls)$/i.test(place)) continue
+    if (!place || place.length < 3 || isNationwide(place) || isState(place)) continue
+    if (/^(der|die|das|dem|den|wenn|falls|de)$/i.test(place)) continue
     return place
   }
   return ""
+}
+
+function townNamed(text) {
+  const match = String(text || "").match(/\b((?:sankt|st\.?)\s+[a-zäöüß][\p{L}-]+)/iu)
+  if (!match) return ""
+  const place = tidyPlace(match[1])
+  if (!place || isNationwide(place) || isState(place)) return ""
+  return place
 }
 
 // Remote in ganz Deutschland und hybrid im Umkreis sind zwei Bedingungen, kein einzelner Ort.
@@ -115,9 +125,25 @@ function compoundWork(text) {
   const remote = /\b(?:remote|home\s*-?\s*office|homeoffice)\b/i.test(source)
   const hybrid = /\bhybrid\b/i.test(source)
   const radius = radiusMention(source)
-  const city = placeAround(source)
+  const city = placeAround(source) || townNamed(source)
   if (!(remote && hybrid && mentionsNationwide(source) && radius && city)) return null
   return { city, radius }
+}
+
+function closestKm(points, center) {
+  if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lon)) return null
+  let best = null
+  for (const point of points || []) {
+    const lat = Number(point?.lat ?? point?.breite)
+    const lon = Number(point?.lon ?? point?.laenge)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
+    const km = getDistance(
+      { latitude: center.lat, longitude: center.lon },
+      { latitude: lat, longitude: lon }
+    ) / 1000
+    if (best == null || km < best) best = km
+  }
+  return best
 }
 
 function locate(name) {
@@ -200,5 +226,7 @@ module.exports = {
   radiusMention,
   tidyPlace,
   placeAround,
-  compoundWork
+  townNamed,
+  compoundWork,
+  closestKm
 }

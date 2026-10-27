@@ -1,5 +1,6 @@
-const { namesFor, towns, canonicalState } = require("../geo")
+const { namesFor, towns, canonicalState, locate, closestKm } = require("../geo")
 const { log, active } = require("../log")
+const { clearDesignTitle, designSearch, unrelatedTitle } = require("../titles")
 
 const API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service"
 const PAGE = 20
@@ -115,7 +116,7 @@ function termsFor(filters) {
   const add = (term) => {
     const clean = String(term || "").trim()
     const key = clean.toLowerCase()
-    if (!key || seen.has(key) || terms.length >= 5) return
+    if (!key || seen.has(key) || terms.length >= 8) return
     seen.add(key)
     terms.push(clean)
   }
@@ -125,6 +126,7 @@ function termsFor(filters) {
   } else {
     add(searchTerm(filters))
   }
+  for (const alias of filters.aliases || []) add(alias)
   for (const term of filters.expansion || []) add(term)
   return terms
 }
@@ -210,6 +212,53 @@ async function load(items) {
   return jobs
 }
 
+function listingKm(item, center) {
+  return closestKm(item?.stellenlokationen || [], center)
+}
+
+function inRadius(item, center, radiusKm) {
+  const km = listingKm(item, center)
+  if (km != null) return km <= radiusKm
+  const agency = Number(item?.entfernung)
+  return Number.isFinite(agency) && agency <= radiusKm
+}
+
+function rankListing(item, filters) {
+  const title = String(item?.stellenangebotsTitel || "")
+  let score = 0
+  if (unrelatedTitle(title)) score -= 20
+  if (clearDesignTitle(title)) score += 10
+  if (filters.remote === "required" && /home[\s-]*office|remote/i.test(title)) score += 6
+  if (filters.remote === "required" && item?.homeofficemoeglich === true) score += 2
+  return score
+}
+
+async function radiusBatch(filters, city, word, center) {
+  const names = await namesFor(city)
+  let bestName = names[0]
+  let bestRows = []
+  let bestOutside = 0
+  for (const name of names) {
+    if (!active()) break
+    const list = await searchCity(filters, name, word, 1)
+    const rows = list.ergebnisliste || []
+    const near = []
+    let outside = 0
+    for (const item of rows) {
+      if (inRadius(item, center, filters.radiusKm)) near.push(item)
+      else outside += 1
+    }
+    log(word + " · " + name + ": " + near.length + " im Umkreis, " + outside + " außerhalb")
+    if (near.length > bestRows.length) {
+      bestName = name
+      bestRows = near
+      bestOutside = outside
+    }
+  }
+  if (bestRows.length) log("Ort gewählt: " + bestName + " · " + bestRows.length + " behalten, " + bestOutside + " außerhalb")
+  return bestRows
+}
+
 async function listings(filters) {
   const terms = termsFor(filters)
   const term = terms[0] || ""
@@ -229,20 +278,50 @@ async function listings(filters) {
   const words = terms.length ? terms : [""]
   const lists = []
   let total = 0
+  const design = designSearch(filters)
   for (const city of cities) {
     if (!active()) break
-    const name = city ? await placeName(filters, city, term) : null
+    const center = city && filters.radiusKm ? await locate(city) : null
+    const name = city && !filters.radiusKm ? await placeName(filters, city, term) : null
     for (const word of words) {
       if (!active()) break
-      const list = await searchCity(filters, name, word, 1)
-      const batch = list.ergebnisliste || []
-      total += Number(list.maxErgebnisse) || batch.length
-      log("Seite 1 · " + (word || "kein Begriff") + (name ? " · " + name : "") + ": " + batch.length + ", gelesen werden " + PAGE)
+      if (city && filters.radiusKm) {
+        const near = await radiusBatch(filters, city, word, center)
+        total += near.length
+        lists.push(near)
+        continue
+      }
+      const pages = filters.remote === "required" ? [1, 2] : [1]
+      const batch = []
+      let reported = 0
+      for (const page of pages) {
+        if (!active()) break
+        const list = await searchCity(filters, name, word, page)
+        const rows = list.ergebnisliste || []
+        reported = Number(list.maxErgebnisse) || reported
+        batch.push(...rows)
+        log("Seite " + page + " · " + (word || "kein Begriff") + (name ? " · " + name : "") + ": " + rows.length + ", gelesen werden " + PAGE)
+        if (rows.length < PAGE) break
+      }
+      total += reported || batch.length
       if (name && !batch.length) log(name + ": keine Anzeigen")
       lists.push(batch)
     }
   }
-  return { items: mergeFair(lists, PAGE), total }
+  const prepared = lists.map((list) => {
+    if (!design) return list
+    return list
+      .filter((item) => clearDesignTitle(item.stellenangebotsTitel))
+      .sort((left, right) => rankListing(right, filters) - rankListing(left, filters))
+  })
+  const merged = mergeFair(prepared, design ? 36 : PAGE)
+  const items = design
+    ? merged
+      .sort((left, right) => rankListing(right, filters) - rankListing(left, filters))
+      .slice(0, filters.remote === "required" ? 12 : 16)
+    : merged
+  if (design) log("Passende Titel: " + items.length)
+  return { items, total }
 }
 
 module.exports = { id: "arbeitsagentur", listings, load }

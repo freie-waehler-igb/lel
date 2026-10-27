@@ -132,6 +132,22 @@ function isCrisis(text) {
   return /\b(?:nicht mehr leben|suizid|selbstmord|umbringen)\b/i.test(text)
 }
 
+function crisisReply(message) {
+  const text = String(message || "").trim()
+  const empathy = text || "Es tut mir leid, dass es dir gerade so schwer fällt."
+  const hasHelp = /telefonseelsorge/i.test(empathy) && /0800\s*111\s*0\s*111|116\s*123/.test(empathy) && /\b112\b/.test(empathy)
+  if (hasHelp) return empathy
+  return empathy + " Die Telefonseelsorge ist unter 0800 111 0 111 oder 116 123 erreichbar, im Notfall der Notruf 112."
+}
+
+function designAliases(roles) {
+  const blob = (roles || []).join(" ").toLowerCase()
+  if (!/product designer|design engineer|produktdesigner|product design/.test(blob)) return []
+  const known = new Set((roles || []).map((role) => role.toLowerCase()))
+  return ["UX Designer", "UI Designer", "Product Design", "Produktdesigner", "Design Engineer", "Product Designer"]
+    .filter((role) => !known.has(role.toLowerCase()))
+}
+
 function plausibleRole(role) {
   const words = String(role || "").toLowerCase().split(/\s+/).filter(Boolean)
   if (!words.length || words.length > 6) return false
@@ -346,7 +362,7 @@ function resolveTurn(reply, userText, previousRaw) {
   const text = String(userText || "")
   if (isHesitation(text) || isOffTopic(text) || isCrisis(text)) {
     return {
-      assistantMessage: message,
+      assistantMessage: isCrisis(text) ? crisisReply(message) : message,
       ready: false,
       filters: previous,
       extracted: extracted(parsed, false)
@@ -355,11 +371,13 @@ function resolveTurn(reply, userText, previousRaw) {
   const said = readUtterance(text)
   const roles = pickRoles(parsed.jobTitle, said.roles, text)
   const skills = pickSkills(parsed.skills, said.skills)
+  const aliases = designAliases(roles)
   const plan = placePlan(parsed, said, text)
   const drafted = normalizeFilters({
     ...previous,
     roles: roles.length ? roles : previous.roles,
     skills: skills.length ? skills : previous.skills,
+    aliases: aliases.length ? aliases : previous.aliases,
     locations: plan.specified ? plan.locations : previous.locations,
     locationAny: plan.specified ? plan.locationAny : previous.locationAny,
     radiusKm: plan.specified ? (plan.radiusKm != null ? plan.radiusKm : previous.radiusKm) : previous.radiusKm,
