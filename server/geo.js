@@ -58,6 +58,94 @@ function towns(locations) {
   return (locations || []).filter((place) => place && !isState(place))
 }
 
+function isNationwide(name) {
+  return /^(?:deutschland|germany|bundesweit|bundesgebiet|bundesrepublik(?:\s+deutschland)?|de)$/i.test(String(name || "").trim())
+}
+
+function mentionsNationwide(text) {
+  const source = String(text || "")
+  if (/\b(?:deutschland|germany|bundesweit|bundesgebiet)\b/i.test(source)) return true
+  return /\b(?:in|nach)\s+de\b/i.test(source)
+}
+
+function radiusMention(text) {
+  const match = String(text || "").match(/(\d{1,3})\s*km\b/i)
+  if (!match) return null
+  const numeric = Number(match[1])
+  if (!Number.isInteger(numeric) || numeric < 1 || numeric > 200) return null
+  return numeric
+}
+
+function tidyPlace(raw) {
+  const words = String(raw || "").trim().replace(/[.,;:!?]+$/g, "").split(/\s+/).filter(Boolean)
+  if (!words.length) return ""
+  return words.map((word, index) => {
+    const bare = word.replace(/[.,;:!?]+$/g, "")
+    if (/^sankt$/i.test(bare)) return "Sankt"
+    if (/^st\.?$/i.test(bare)) return "St."
+    if (index > 0 && /^(am|an|der|im|von|und)$/i.test(bare)) return bare.toLowerCase()
+    return bare.charAt(0).toUpperCase() + bare.slice(1).toLowerCase()
+  }).join(" ")
+}
+
+function placeAround(text) {
+  const source = String(text || "")
+  const patterns = [
+    /\b(?:um|rund um|nahe|bei)\s+([a-zäöüß][\p{L}.-]+(?:\s+[a-zäöüß][\p{L}.-]+){0,3})/iu,
+    /\b(?:in|aus)\s+([a-zäöüß][\p{L}.-]+(?:\s+[a-zäöüß][\p{L}.-]+){0,3})/iu
+  ]
+  for (const pattern of patterns) {
+    const match = source.match(pattern)
+    if (!match) continue
+    const words = []
+    for (const word of match[1].split(/\s+/)) {
+      if (/^(oder|und|or|and|remote|hybrid|homeoffice|home|office)$/i.test(word)) break
+      words.push(word)
+      if (words.length >= 4) break
+    }
+    const place = tidyPlace(words.join(" "))
+    if (!place || place.length < 3 || isNationwide(place) || isState(place)) continue
+    if (/^(der|die|das|dem|den|wenn|falls|de)$/i.test(place)) continue
+    return place
+  }
+  return ""
+}
+
+function townNamed(text) {
+  const match = String(text || "").match(/\b((?:sankt|st\.?)\s+[a-zäöüß][\p{L}-]+)/iu)
+  if (!match) return ""
+  const place = tidyPlace(match[1])
+  if (!place || isNationwide(place) || isState(place)) return ""
+  return place
+}
+
+// Remote in ganz Deutschland und hybrid im Umkreis sind zwei Bedingungen, kein einzelner Ort.
+function compoundWork(text) {
+  const source = String(text || "")
+  const remote = /\b(?:remote|home\s*-?\s*office|homeoffice)\b/i.test(source)
+  const hybrid = /\bhybrid\b/i.test(source)
+  const radius = radiusMention(source)
+  const city = placeAround(source) || townNamed(source)
+  if (!(remote && hybrid && mentionsNationwide(source) && radius && city)) return null
+  return { city, radius }
+}
+
+function closestKm(points, center) {
+  if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lon)) return null
+  let best = null
+  for (const point of points || []) {
+    const lat = Number(point?.lat ?? point?.breite)
+    const lon = Number(point?.lon ?? point?.laenge)
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
+    const km = getDistance(
+      { latitude: center.lat, longitude: center.lon },
+      { latitude: lat, longitude: lon }
+    ) / 1000
+    if (best == null || km < best) best = km
+  }
+  return best
+}
+
 function locate(name) {
   const key = String(name || "").trim().toLowerCase()
   if (!key || isState(name)) return Promise.resolve(null)
@@ -125,4 +213,20 @@ function inside(job, centers, radiusKm) {
   ) <= limit))
 }
 
-module.exports = { locate, isState, canonicalState, statesIn, towns, namesFor, inside }
+module.exports = {
+  locate,
+  isState,
+  canonicalState,
+  statesIn,
+  towns,
+  namesFor,
+  inside,
+  isNationwide,
+  mentionsNationwide,
+  radiusMention,
+  tidyPlace,
+  placeAround,
+  townNamed,
+  compoundWork,
+  closestKm
+}
