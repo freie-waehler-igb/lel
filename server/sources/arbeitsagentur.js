@@ -119,7 +119,12 @@ function termsFor(filters) {
     seen.add(key)
     terms.push(clean)
   }
-  add(searchTerm(filters))
+  const roles = (filters.roles || []).map((role) => String(role || "").trim()).filter(Boolean)
+  if (roles.length) {
+    for (const role of roles) add(role)
+  } else {
+    add(searchTerm(filters))
+  }
   for (const term of filters.expansion || []) add(term)
   return terms
 }
@@ -212,13 +217,14 @@ async function listings(filters) {
   const townsOnly = towns(named)
   const places = townsOnly.length ? townsOnly : named.map((place) => canonicalState(place) || place)
   const cities = places.length ? places : (!named.length || filters.locationAny ? [null] : [])
-  const where = places.join(", ")
+  const where = places.join(", ") || (filters.locationAny ? "bundesweit" : "")
+  const mode = filters.remote === "required" ? "remote" : filters.hybrid ? "hybrid" : ""
   const open = !term && (
     filters.salaryMin != null || filters.salaryMax != null || filters.locationAny
     || filters.remote === "required" || filters.remote === "allowed" || filters.remote === "onsite"
     || filters.employment || filters.permanent != null || filters.maxAgeHours || filters.excludeTempAgency
   )
-  log("Suche: " + (terms.join(", ") || "kein Begriff") + (where ? " · " + where : ""))
+  log("Suche: " + (terms.join(", ") || "kein Begriff") + (mode ? " · " + mode : "") + (where ? " · " + where : ""))
   if ((!term && !open) || !cities.length || !active()) return { items: [], total: 0 }
   const words = terms.length ? terms : [""]
   const lists = []

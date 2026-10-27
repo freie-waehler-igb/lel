@@ -52,6 +52,12 @@ function choose(option, box) {
   form.requestSubmit()
 }
 
+function visibleReply(text) {
+  const raw = String(text || "")
+  const at = raw.indexOf("###DATA###")
+  return (at === -1 ? raw : raw.slice(0, at)).trim()
+}
+
 function addBubble(role, text, fileName, options) {
   const article = document.createElement("article")
   article.className = "bubble " + role
@@ -97,6 +103,8 @@ function chipList(filters) {
   for (const role of filters.roles || []) add(role)
   const radius = filters.radiusKm ? ", " + filters.radiusKm + " km" : ""
   for (const place of filters.locations || []) add(place + radius)
+  if (filters.alsoFullyRemote) add("Remote Deutschland")
+  if (filters.hybrid) add("Hybrid")
   const min = filters.salaryMin
   const max = filters.salaryMax
   const amount = (value) => new Intl.NumberFormat("de-DE").format(value)
@@ -390,9 +398,10 @@ form.addEventListener("submit", async (event) => {
     state.filters = data.filters
     state.safety = data.safety || null
     paintDebug(data)
+    const spoken = visibleReply(data.assistantMessage)
     if (!data.ready) {
-      state.messages.push({ role: "assistant", content: data.assistantMessage })
-      addBubble("assistant", data.assistantMessage, null, data.options)
+      state.messages.push({ role: "assistant", content: spoken })
+      addBubble("assistant", spoken, null, data.options)
       return
     }
     hideTyping()
@@ -408,7 +417,7 @@ form.addEventListener("submit", async (event) => {
       addBubble("assistant", jobs.error || "Die Suche ist fehlgeschlagen.")
       return
     }
-    const sentence = jobs.matches?.length ? data.assistantMessage : (salaryGap(data.filters, data.assistantMessage.startsWith("Here are")) || data.assistantMessage)
+    const sentence = jobs.matches?.length ? spoken : (salaryGap(data.filters, spoken.startsWith("Here are")) || spoken)
     state.messages.push({ role: "assistant", content: sentence })
     addBubble("assistant", sentence)
     paintChips(data.filters)

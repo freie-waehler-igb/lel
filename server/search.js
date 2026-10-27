@@ -213,7 +213,8 @@ function narrowJobs(jobs, filters, verdictById) {
       continue
     }
     const remote = verdict.remote === true
-    if (remoteAsked && !remote) {
+    // Hybrid im Umkreis ist nicht vollständig remote und bleibt in der lokalen Suche.
+    if (remoteAsked && !filters.hybrid && !remote) {
       rejected.push(rejectedJob(job, verdict.why || "Die Stelle ist nicht vollständig remote."))
       continue
     }
@@ -247,7 +248,7 @@ async function keepNearby(jobs, filters) {
 
 function keptVerdict(verdict, filters) {
   if (!verdict?.fit) return false
-  if (filters.remote === "required" && verdict.remote !== true) return false
+  if (filters.remote === "required" && !filters.hybrid && verdict.remote !== true) return false
   return true
 }
 
@@ -349,18 +350,64 @@ function bothWays(filters) {
   return Boolean(filters.alsoFullyRemote && filters.radiusKm && filters.locations?.length)
 }
 
+function withoutSplit(filters) {
+  return { ...filters, branches: [], alsoFullyRemote: false }
+}
+
+function branchPlan(filters) {
+  if (Array.isArray(filters.branches) && filters.branches.length >= 2) {
+    return filters.branches.map((branch, index) => ({
+      label: branch.label || ("Zweig " + (index + 1)),
+      filters: withoutSplit(branch.filters || {})
+    }))
+  }
+  if (!bothWays(filters)) return null
+  const city = (filters.locations || []).join(", ")
+  const base = withoutSplit(filters)
+  return [
+    {
+      label: "remote deutschland (bundesweit, vollständig remote)",
+      filters: {
+        ...base,
+        locations: [],
+        locationAny: true,
+        radiusKm: null,
+        remote: "required",
+        hybrid: false
+      }
+    },
+    {
+      label: "hybrid " + filters.radiusKm + " km " + city + " (nicht vollständig remote)",
+      filters: {
+        ...base,
+        locations: [...(filters.locations || [])],
+        locationAny: false,
+        radiusKm: filters.radiusKm,
+        remote: "allowed",
+        hybrid: true
+      }
+    }
+  ]
+}
+
 async function collect(filters) {
-  if (!bothWays(filters)) return runSearch(filters)
-  const local = await runSearch({ ...filters, remote: "allowed", alsoFullyRemote: false })
-  const remote = await runSearch({
-    ...filters,
-    locations: [],
-    locationAny: true,
-    radiusKm: null,
-    remote: "required",
-    alsoFullyRemote: false
-  })
-  return mergeResults(local, remote)
+  const plan = branchPlan(filters)
+  if (!plan) return runSearch(filters)
+  let merged = null
+  let failure = null
+  for (const branch of plan) {
+    // Zwei echte Suchen: bundesweit remote, und hybrid nur im Umkreis.
+    log("Zweig: " + branch.label)
+    try {
+      const result = await runSearch(branch.filters)
+      merged = merged ? mergeResults(merged, result) : result
+    } catch (error) {
+      log("Zweig fehlgeschlagen: " + branch.label)
+      failure = error
+    }
+  }
+  if (!merged) throw failure || new Error("Die Suche ist fehlgeschlagen.")
+  return merged
 }
 
 async function searchJobs(filters) {
