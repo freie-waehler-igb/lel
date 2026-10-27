@@ -117,9 +117,10 @@ Zuerst schreibst du nur den Satz, den die Person liest. Danach kommt in derselbe
 
 Der gelesene Text enthält weder ###DATA### noch JSON noch Feldnamen. Kein Rezept, kein Code, keine Aufzählung. Ein bis drei Sätze.
 
-Ton:
-- Zögern ("eii lass mich überlegen", "hm", "moment"): empathisch und leicht, zum Beispiel "Klar, nimm dir Zeit!" Danach ein Satz zurück zur Jobsuche. readyToSearch false.
-- Anderes Thema, etwa ein Rezept, Smalltalk oder Philosophie: kurz und charmant darauf eingehen, dann in ein bis zwei Sätzen zurück zur Jobsuche. Beispiel: "Klingt nach einem leckeren Rezept, aber lass uns danach schauen, wie wir das finanzieren..." readyToSearch false.
+Ton, und zwar nur passend zur letzten Nachricht. Übernimm einen Beispielsatz nicht, wenn die Nachricht etwas anderes ist.
+- Zögern ("eii lass mich überlegen", "hm", "moment"): erst ein empathischer Satz, dann die Frage, welcher Job es werden soll. readyToSearch false.
+- Anderes Thema, etwa ein Rezept, Smalltalk oder Philosophie: kurz und charmant darauf eingehen, dann in ein bis zwei Sätzen zurück zur Jobsuche. Ein Rezept bleibt ungeschrieben. readyToSearch false.
+- Echte Suche: ein kurzer menschlicher Satz, der Beruf und Ort oder Remote beim Namen nennt. Bei "remote deutschland oder hybrid im Umkreis" nenne beide Seiten, die Stadt und die Kilometer, nicht nur das Land. Nicht "Hier sind" und nicht "nimm dir Zeit".
 - Sag nie "Ich bin eine Job-KI und kann dir nur bei der Stellensuche helfen." Sag nie, etwas sei verboten. Keine Moral und kein Vortrag.
 - Krise: ein kurzer ruhiger Satz, ohne Belehrung. readyToSearch false.
 
@@ -190,6 +191,32 @@ function soundsCanned(text) {
   return /ich bin eine job-ki|kann dir nur bei der stellensuche|sicherheitsrichtlinie verletzt|um die jobsuche zu starten/i.test(String(text || ""))
 }
 
+function lastUser(messages) {
+  return String(messages.filter((message) => message.role === "user").at(-1)?.content || "")
+}
+
+function replyMisses(messages, assistant) {
+  const text = lastUser(messages)
+  const spoken = String(assistant || "")
+  const searching = /\b(?:remote|hybrid|designer|engineer|entwickler|stelle|job|jobs|suche)\b/i.test(text)
+  const namesIt = /\b(?:remote|hybrid|designer|engineer|entwickler|ingbert|stelle|job)\b/i.test(spoken)
+  const stall = /nimm dir zeit/i.test(spoken)
+  if (searching && stall && !namesIt) return "Das war die Antwort auf ein Zögern, aber ich will jetzt suchen. Sag in ein bis zwei Sätzen konkret, welchen Beruf und welchen Ort oder welches Remote du suchst. Danach ###DATA### und das JSON, readyToSearch true."
+  const compound = /\bremote\b/i.test(text) && /\bhybrid\b/i.test(text) && /\bdeutschland\b/i.test(text)
+  if (compound) {
+    const namesRemote = /\b(?:remote|deutschland)\b/i.test(spoken)
+    const namesLocal = /\b(?:hybrid|ingbert|umkreis|km)\b/i.test(spoken)
+    if (!(namesRemote && namesLocal)) {
+      return "Die Suche hat zwei Seiten. Sag in ein bis zwei Sätzen beide: vollständig remote in Deutschland, oder hybrid im genannten Umkreis um die genannte Stadt. Nenne die Berufe. Danach ###DATA### und das JSON mit readyToSearch true."
+    }
+  }
+  const hesitating = /^e+i+\b/i.test(text) || (/\b(?:lass|laß) mich\b/i.test(text) && /\büberlegen\b/i.test(text))
+  if (hesitating && !/\b(?:job|jobs|stelle|stellen|beruf|such)\b/i.test(spoken)) {
+    return "Bleib bei dem empathischen Satz und häng einen kurzen zweiten Satz an, der zur Jobsuche zurückführt, zum Beispiel welcher Job es werden soll. Danach ###DATA### und das JSON, readyToSearch false."
+  }
+  return ""
+}
+
 function memoryNote(filters) {
   if (!filters || typeof filters !== "object") return ""
   const roles = Array.isArray(filters.roles) ? filters.roles.join(", ") : ""
@@ -233,15 +260,18 @@ async function converse(messages, previousFilters) {
   }
   if (!raw) throw unavailable()
   let split = splitReply(raw)
-  if (soundsCanned(split.assistantMessage) && process.env.NVIDIA_API_KEY) {
+  const nudge = soundsCanned(split.assistantMessage)
+    ? "Das klang nach einer Hotline. Geh kurz und menschlich auf meinen Satz ein und lenk in ein bis zwei Sätzen zur Jobsuche zurück. Danach der Trenner ###DATA### und das JSON."
+    : replyMisses(messages, split.assistantMessage)
+  if (nudge && process.env.NVIDIA_API_KEY) {
     try {
       const retry = await askChat([
         ...payload,
         { role: "assistant", content: split.assistantMessage },
-        { role: "user", content: "Das klang nach einer Hotline. Geh kurz und menschlich auf meinen Satz ein und lenk in ein bis zwei Sätzen zur Jobsuche zurück. Danach der Trenner ###DATA### und das JSON." }
+        { role: "user", content: nudge }
       ])
       const again = splitReply(retry)
-      if (again.assistantMessage && !soundsCanned(again.assistantMessage)) split = again
+      if (again.assistantMessage && !soundsCanned(again.assistantMessage) && !replyMisses(messages, again.assistantMessage)) split = again
     } catch (error) {
       console.error("Nemotron:", error.message)
     }
